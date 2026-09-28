@@ -4,7 +4,7 @@
       "command": "node",
       "args": ["/absolute/path/to/tipshare/dist/server.js"],
       "env": {
-        "TIPSHARE_AGENT_ID": "tiny-invasion"
+        "TIPSHARE_AGENT_ID": "my-project"
       }
     }
   }

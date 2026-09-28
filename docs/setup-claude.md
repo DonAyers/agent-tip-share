@@ -4,7 +4,7 @@ agents — so this project reads and writes it.
 This is a copy-paste prompt for a Claude Code session. Replace
 `<tipshare-repo>` with the absolute path to your tipshare checkout
 (the folder containing `dist/server.js`), and `<short-id>` with a short,
-stable agent id for this project (e.g. the game's name, like "tiny-invasion").
+stable agent id for this project (e.g. "my-project").
 
 CONTEXT
 - The server is already built at `<tipshare-repo>/dist/server.js`. If that

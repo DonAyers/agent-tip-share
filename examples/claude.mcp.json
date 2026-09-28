@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "tipshare": {
+      "command": "node",
+      "args": ["/absolute/path/to/tipshare/dist/server.js"],
+      "env": {
+        "TIPSHARE_AGENT_ID": "tiny-invasion"
+      }
+    }
+  }
+}

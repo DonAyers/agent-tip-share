@@ -1,0 +1,10 @@
+{
+  "mcp": {
+    "tipshare": {
+      "type": "local",
+      "command": ["node", "/absolute/path/to/tipshare/dist/server.js"],
+      "enabled": true,
+      "environment": { "TIPSHARE_AGENT_ID": "tiny-invasion" }
+    }
+  }
+}

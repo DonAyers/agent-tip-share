@@ -96,6 +96,9 @@ export function migrate(db: Database.Database): void {
   ensureColumn(db, "tips", "supersedes", "supersedes TEXT");
   ensureColumn(db, "outcomes", "uuid", "uuid TEXT");
 
+  ensureColumn(db, "tips", "applicability", "applicability TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, "tips", "evidence_state", "evidence_state TEXT NOT NULL DEFAULT 'unverified'");
+  ensureColumn(db, "outcomes", "revision", "revision INTEGER NOT NULL DEFAULT 1");
   backfillUuids(db, "tips");
   backfillUuids(db, "outcomes");
 

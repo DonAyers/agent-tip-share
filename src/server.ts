@@ -98,6 +98,8 @@ server.registerTool(
       artifact_code: z.string().optional(),
       author: z.string().optional(),
       supersedes: z.string().optional(),
+      applicability: z.record(z.unknown()).optional(),
+      evidence_state: z.string().optional(),
     },
     annotations: { readOnlyHint: false, destructiveHint: false },
   },
@@ -113,6 +115,8 @@ server.registerTool(
       artifact_code: args.artifact_code,
       author: args.author ?? defaultAuthor(),
       supersedes: args.supersedes,
+      applicability: args.applicability,
+      evidence_state: args.evidence_state,
     });
     checkpoint(db, "PASSIVE");
     return json(tip);
@@ -140,7 +144,7 @@ server.registerTool(
   {
     description:
       "Fetch one tip in full, including its solution text, gotchas, and code artifact. Use only for tips that look relevant.",
-    inputSchema: { tip_id: z.number().int() },
+    inputSchema: { tip_id: z.union([z.number().int(), z.string().uuid()]) },
     annotations: { readOnlyHint: true },
   },
   async (args) => {

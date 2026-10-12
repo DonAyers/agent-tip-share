@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "tsx --test scripts/lifecycle.test.ts",
     "dev": "tsx src/server.ts",
     "start": "node dist/server.js",
     "dump": "tsx src/cli.ts dump",

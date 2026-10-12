@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 
 export interface Topic {
   slug: string;
@@ -8,7 +8,17 @@ export interface Topic {
   created_at: string;
 }
 
-export interface Tip {
+export interface KnowledgeMetadata {
+  applicability: Record<string, unknown>;
+  evidence_state: string;
+  content_hash: string;
+  revision: string;
+  status: string;
+  warnings: string[];
+}
+
+export interface Tip extends KnowledgeMetadata {
+  outcomes: Array<Record<string, unknown>>;
   id: number;
   uuid: string;
   topic_slug: string;
@@ -28,7 +38,7 @@ export interface Tip {
   confidence: number;
 }
 
-export interface TipSummary {
+export interface TipSummary extends KnowledgeMetadata {
   id: number;
   uuid: string;
   topic_slug: string;
@@ -63,7 +73,7 @@ const TIP_SELECT = `
 `;
 
 const SUMMARY_SELECT = `
-  SELECT t.id, t.uuid, t.topic_slug, t.title, t.summary, t.author, t.created_at, t.supersedes,
+  SELECT t.*,
     (SELECT COUNT(*) FROM tips s WHERE s.supersedes = t.uuid) AS superseded_by,
     COALESCE(c.confirmations, 0) AS confirmations,
     COALESCE(c.rejections, 0) AS rejections,
@@ -71,6 +81,15 @@ const SUMMARY_SELECT = `
   FROM tips t
   ${OUTCOME_JOIN}
 `;
+
+function knowledgeMetadata(row: Record<string, unknown>): KnowledgeMetadata {
+  const applicability = typeof row.applicability === "string" ? JSON.parse(row.applicability) : (row.applicability ?? {});
+  const evidence_state = String(row.evidence_state ?? "unverified");
+  const content_hash = createHash("sha256").update(JSON.stringify([row.topic_slug, row.title, row.summary ?? "", row.problem ?? "", row.solution, row.gotchas, row.artifact_name, row.artifact_code, applicability, evidence_state])).digest("hex");
+  const status = Number(row.superseded_by ?? 0) > 0 ? "superseded" : Number(row.rejections ?? 0) > 0 ? "disputed" : evidence_state;
+  const warnings = status === "superseded" ? ["Replaced advice; retrieve superseding tips"] : Number(row.rejections ?? 0) > 0 ? ["Correction/outcome notes exist; retrieve full tip before applying"] : evidence_state !== "verified" ? [`Evidence: ${evidence_state}; check applicability`] : [];
+  return { applicability: applicability as Record<string, unknown>, evidence_state, content_hash, revision: content_hash, status, warnings };
+}
 
 function serializeTip(
   row: Record<string, unknown>,
@@ -84,6 +103,7 @@ function serializeTip(
     gotchas = [];
   }
   return {
+    ...knowledgeMetadata(row),
     id: Number(row.id),
     uuid: String(row.uuid),
     topic_slug: String(row.topic_slug),
@@ -98,6 +118,7 @@ function serializeTip(
     created_at: String(row.created_at),
     supersedes: row.supersedes ? String(row.supersedes) : null,
     superseded_by_ids,
+    outcomes: [],
     confirmations: Number(row.confirmations ?? 0),
     rejections: Number(row.rejections ?? 0),
     confidence: Number(row.confirmations ?? 0) - Number(row.rejections ?? 0),
@@ -108,6 +129,7 @@ function serializeSummary(row: Record<string, unknown>): TipSummary {
   const confirmations = Number(row.confirmations ?? 0);
   const rejections = Number(row.rejections ?? 0);
   return {
+    ...knowledgeMetadata(row),
     id: Number(row.id),
     uuid: String(row.uuid),
     topic_slug: String(row.topic_slug),
@@ -221,6 +243,8 @@ export function shareTip(
     artifact_code?: string;
     author: string;
     supersedes?: string;
+    applicability?: Record<string, unknown>;
+    evidence_state?: string;
   }
 ): TipSummary {
   assertNoSecrets([
@@ -270,6 +294,7 @@ export function shareTip(
       supersedes
     );
   const tipId = Number(info.lastInsertRowid);
+  db.prepare("UPDATE tips SET applicability = ?, evidence_state = ? WHERE id = ?").run(JSON.stringify(input.applicability ?? {}), input.evidence_state ?? "unverified", tipId);
   db.prepare(
     `INSERT INTO subscriptions (author, topic_slug, last_seen_tip_id)
      VALUES (?, ?, ?)
@@ -278,15 +303,17 @@ export function shareTip(
   return getSummary(db, tipId);
 }
 
-export function getTip(db: Database.Database, id: number): Tip {
-  const row = db.prepare(`${TIP_SELECT} WHERE t.id = ?`).get(id) as
+export function getTip(db: Database.Database, id: number | string): Tip {
+  const row = db.prepare(`${TIP_SELECT} WHERE t.id = ? OR t.uuid = ?`).get(id, String(id)) as
     | Record<string, unknown>
     | undefined;
   if (!row) throw new Error(`Tip ${id} not found`);
   const superseding = db
     .prepare("SELECT id FROM tips WHERE supersedes = ? ORDER BY id ASC")
     .all(String(row.uuid)) as Array<{ id: number }>;
-  return serializeTip(row, superseding.map((s) => s.id));
+  const tip = serializeTip(row, superseding.map((s) => s.id));
+  tip.outcomes = db.prepare("SELECT uuid, author, worked, note, created_at, revision FROM outcomes WHERE tip_id = ? ORDER BY id").all(row.id) as Array<Record<string, unknown>>;
+  return tip;
 }
 
 function getSummary(db: Database.Database, id: number): TipSummary {
@@ -327,7 +354,7 @@ export function search(
     if (topic_slug) {
       const rows = db
         .prepare(
-          `SELECT t.id, t.uuid, t.topic_slug, t.title, t.summary, t.author, t.created_at, ${SUMMARY_AGG}
+          `SELECT t.*, ${SUMMARY_AGG}
            FROM tips_fts f JOIN tips t ON t.id = f.rowid
            WHERE tips_fts MATCH ? AND t.topic_slug = ?
              AND NOT EXISTS (SELECT 1 FROM tips sup WHERE sup.supersedes = t.uuid)
@@ -338,7 +365,7 @@ export function search(
     }
     const rows = db
       .prepare(
-        `SELECT t.id, t.uuid, t.topic_slug, t.title, t.summary, t.author, t.created_at, ${SUMMARY_AGG}
+        `SELECT t.*, ${SUMMARY_AGG}
          FROM tips_fts f JOIN tips t ON t.id = f.rowid
          WHERE tips_fts MATCH ?
            AND NOT EXISTS (SELECT 1 FROM tips sup WHERE sup.supersedes = t.uuid)
@@ -365,7 +392,7 @@ export function markOutcome(
     .get(tip_id, author) as { id: number } | undefined;
   if (existing) {
     db.prepare(
-      "UPDATE outcomes SET worked = ?, note = ?, created_at = datetime('now') WHERE id = ?"
+      "UPDATE outcomes SET worked = ?, note = ?, revision = revision + 1, created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
     ).run(worked ? 1 : 0, note, existing.id);
   } else {
     db.prepare(
@@ -456,6 +483,8 @@ export interface ExportData {
     problem: string;
     solution: string;
     gotchas: string[];
+    applicability?: Record<string, unknown>;
+    evidence_state?: string;
     artifact_name: string | null;
     artifact_code: string | null;
     author: string;
@@ -467,6 +496,7 @@ export interface ExportData {
     tip_uuid: string;
     author: string;
     worked: boolean;
+    revision?: number;
     note: string;
     created_at: string;
   }>;
@@ -484,7 +514,7 @@ export function exportStore(db: Database.Database): ExportData {
   const tips = db
     .prepare(
       `SELECT uuid, topic_slug, title, summary, problem, solution, gotchas,
-              artifact_name, artifact_code, author, supersedes, created_at
+              artifact_name, artifact_code, author, supersedes, created_at, applicability, evidence_state
        FROM tips ORDER BY created_at`
     )
     .all() as Array<{
@@ -494,6 +524,8 @@ export function exportStore(db: Database.Database): ExportData {
     summary: string;
     problem: string;
     solution: string;
+    applicability: string;
+    evidence_state: string;
     gotchas: string;
     artifact_name: string | null;
     artifact_code: string | null;
@@ -503,13 +535,14 @@ export function exportStore(db: Database.Database): ExportData {
   }>;
   const outcomes = db
     .prepare(
-      `SELECT o.uuid, o.author, o.worked, o.note, o.created_at, t.uuid AS tip_uuid
+      `SELECT o.uuid, o.author, o.worked, o.note, o.revision, o.created_at, t.uuid AS tip_uuid
        FROM outcomes o JOIN tips t ON t.id = o.tip_id ORDER BY o.created_at`
     )
     .all() as Array<{
     uuid: string;
     author: string;
     worked: number;
+    revision: number;
     note: string;
     created_at: string;
     tip_uuid: string;
@@ -538,6 +571,8 @@ export function exportStore(db: Database.Database): ExportData {
         artifact_code: t.artifact_code,
         author: t.author,
         supersedes: t.supersedes,
+        applicability: JSON.parse(t.applicability),
+        evidence_state: t.evidence_state,
         created_at: t.created_at,
       };
     }),
@@ -546,6 +581,7 @@ export function exportStore(db: Database.Database): ExportData {
       tip_uuid: o.tip_uuid,
       author: o.author,
       worked: !!o.worked,
+      revision: o.revision,
       note: o.note,
       created_at: o.created_at,
     })),
@@ -561,11 +597,15 @@ export function importStore(
   );
   const insTip = db.prepare(
     `INSERT OR IGNORE INTO tips
-       (uuid, topic_slug, title, summary, problem, solution, gotchas, artifact_name, artifact_code, author, supersedes, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (uuid, topic_slug, title, summary, problem, solution, gotchas, artifact_name, artifact_code, author, supersedes, created_at, applicability, evidence_state)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insOutcome = db.prepare(
-    `INSERT OR IGNORE INTO outcomes (uuid, tip_id, author, worked, note, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO outcomes (uuid, tip_id, author, worked, note, created_at, revision) VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(tip_id, author) DO UPDATE SET worked=excluded.worked, note=excluded.note,
+       created_at=excluded.created_at, revision=excluded.revision
+     WHERE excluded.revision > outcomes.revision OR
+       (excluded.revision = outcomes.revision AND julianday(excluded.created_at) > julianday(outcomes.created_at))`
   );
   const tipIdByUuid = db.prepare("SELECT id FROM tips WHERE uuid = ?");
   const run = db.transaction(() => {
@@ -589,7 +629,9 @@ export function importStore(
         tip.artifact_code ?? null,
         tip.author,
         tip.supersedes ?? null,
-        tip.created_at
+        tip.created_at,
+        JSON.stringify(tip.applicability ?? {}),
+        tip.evidence_state ?? "unverified"
       );
       if (res.changes > 0) tips++;
     }
@@ -602,7 +644,8 @@ export function importStore(
         outcome.author,
         outcome.worked ? 1 : 0,
         outcome.note ?? "",
-        outcome.created_at
+        outcome.created_at,
+        outcome.revision ?? 1
       );
       if (res.changes > 0) outcomes++;
     }

@@ -1,0 +1,31 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import Database from 'better-sqlite3';
+import { migrate } from '../src/db.js';
+import { shareTip, getTip, markOutcome, search, exportStore, importStore } from '../src/store.js';
+test('later outcome revisions reconcile while older dumps cannot undo corrections', () => {
+ const a=fresh(), b=fresh(); const t=shareTip(a,{topic_slug:'art',title:'test',solution:'x',author:'a',applicability:{host:'local'},evidence_state:'disputed'});
+ markOutcome(a,t.id,true,'initial','a'); const old=exportStore(a); importStore(b,old);
+ markOutcome(a,t.id,false,'retracted','a'); importStore(b,exportStore(a)); importStore(b,old);
+ const got=getTip(b,1); assert.equal(got.outcomes[0].note,'retracted'); assert.equal(got.applicability.host,'local');
+ assert.equal(got.content_hash,getTip(a,t.id).content_hash);
+ migrate(b); assert.equal(getTip(b,1).outcomes[0].note,'retracted'); a.close(); b.close();
+});
+const fresh = () => { const db = new Database(':memory:'); migrate(db); return db; };
+test('correction notes and scoped evidence are delivered with advice and search', () => {
+ const db = fresh();
+ const t = shareTip(db, {topic_slug:'art',title:'charge animation',solution:'stage the motion',author:'a', applicability:{provider:'pixellab',transport:'mcp'},evidence_state:'disputed'} as any);
+ markOutcome(db,t.id,false,'Only worked already mid-stride','reviewer');
+ assert.equal(getTip(db,t.uuid as any).uuid,t.uuid);
+ const full = getTip(db,t.id) as any;
+ assert.equal(full.outcomes[0].note,'Only worked already mid-stride');
+ assert.equal(full.status,'disputed');
+ assert.equal(full.applicability.transport,'mcp');
+ assert.match(full.content_hash,/^[a-f0-9]{64}$/);
+ assert.equal(full.revision,full.content_hash);
+ assert.ok((search(db,'charge')[0] as any).warnings.length);
+ const replacement = shareTip(db,{topic_slug:'art',title:'charge animation corrected',solution:'use URLs',author:'a',supersedes:t.uuid});
+ assert.deepEqual(search(db,'charge').map(x=>x.id),[replacement.id]);
+ assert.equal((getTip(db,t.id) as any).status,'superseded');
+ db.close();
+});
